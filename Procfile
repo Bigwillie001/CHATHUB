@@ -1,1 +1,1 @@
-web: gunicorn -k gthread -w 1 -b 0.0.0.0:5000 app:app
+web: gunicorn -k eventlet -w 1 -b 0.0.0.0:10000 app:app
