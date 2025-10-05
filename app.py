@@ -7,15 +7,12 @@ pip install -r requirements.txt
 requirements.txt:
 Flask==2.2.5
 Flask-SocketIO==5.3.5
-python-socketio==5.11.3
-python-engineio==4.9.1
-eventlet==0.33.3
 gunicorn==23.0.0
 Werkzeug==2.2.3
 Pillow==10.0.0
 
 Procfile (for Render/Heroku):
-web: gunicorn --worker-class eventlet -w 1 app:app
+web: gunicorn -w 1 -k gthread -b 0.0.0.0:5000 app:app
 """
 
 import os
@@ -42,7 +39,7 @@ app.config["UPLOAD_FOLDER"] = "uploads"
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
 # Use eventlet to support WebSockets in production (gunicorn + eventlet recommended)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # ------------- DB helpers (each call opens/closes a connection) -------------
 def get_conn():
