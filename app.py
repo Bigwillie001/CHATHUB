@@ -5,14 +5,14 @@ Create requirements.txt with these lines and run:
 pip install -r requirements.txt
 
 requirements.txt:
-Flask==2.2.5
-Flask-SocketIO==5.3.5
+Flask==3.1.2
+Flask-SocketIO==5.5.1
 gunicorn==23.0.0
-Werkzeug==2.2.3
+eventlet==0.36.1
 Pillow==10.0.0
 
-Procfile (for Render/Heroku):
-web: gunicorn -w 1 -k gthread -b 0.0.0.0:5000 app:app
+Procfile (for Render):
+web: gunicorn -w 1 -k eventlet -b 0.0.0.0:$PORT app:app
 """
 
 import os
@@ -39,7 +39,7 @@ app.config["UPLOAD_FOLDER"] = "uploads"
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
 # Use eventlet to support WebSockets in production (gunicorn + eventlet recommended)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 # ------------- DB helpers (each call opens/closes a connection) -------------
 def get_conn():
@@ -746,13 +746,13 @@ def on_disconnect():
     socketio.emit("user_list", [{"username": u, "avatar": get_user(u)["avatar"] if get_user(u) else None} for u in user_to_sid.keys()])
 
 # ------------- Startup -------------
-if __name__ == "__main__":
-    # Ensure Lobby has a welcome message
+ if __name__ == "__main__":
+    # Ensure Lobby has a welcome message (for first-time DB setup)
     conn = get_conn()
     cur = conn.execute("SELECT COUNT(*) as c FROM messages").fetchone()
     if cur and cur["c"] == 0:
         persist_message("Lobby", "System", None, "Welcome to CHATHUB", None)
     conn.close()
-    print(f"Starting CHATHUB on http://0.0.0.0:{APP_PORT}  (debug=False)")
-    # production-safe: debug False
-    socketio.run(app, host="0.0.0.0", port=APP_PORT, debug=False)
+
+    # Local dev only (Render/Heroku will use gunicorn instead)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True)  # local only
