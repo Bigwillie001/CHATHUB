@@ -746,12 +746,12 @@ def on_disconnect():
     socketio.emit("user_list", [{"username": u, "avatar": get_user(u)["avatar"] if get_user(u) else None} for u in user_to_sid.keys()])
 
 # ------------- Startup -------------
- if __name__ == "__main__":
+if __name__ == "__main__":
     # Ensure Lobby has a welcome message (for first-time DB setup)
     conn = get_conn()
     cur = conn.execute("SELECT COUNT(*) as c FROM messages").fetchone()
     if cur and cur["c"] == 0:
-        persist_message("Lobby", "System", None, "Welcome to CHATHUB", None)
+        persist_message("Lobby", "System", None,e "Welcome to CHATHUB", None)
     conn.close()
 
     # Local dev only (Render/Heroku will use gunicorn instead)
