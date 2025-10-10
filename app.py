@@ -751,7 +751,7 @@ if __name__ == "__main__":
     conn = get_conn()
     cur = conn.execute("SELECT COUNT(*) as c FROM messages").fetchone()
     if cur and cur["c"] == 0:
-        persist_message("Lobby", "System", None,e "Welcome to CHATHUB", None)
+        persist_message("Lobby", "System", None, "Welcome to CHATHUB", None)
     conn.close()
 
     # Local dev only (Render/Heroku will use gunicorn instead)
