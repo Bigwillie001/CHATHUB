@@ -8,11 +8,11 @@ requirements.txt:
 Flask==3.1.2
 Flask-SocketIO==5.5.1
 gunicorn==23.0.0
-eventlet==0.36.1
+gevent==23.9.1
 Pillow==10.0.0
 
 Procfile (for Render):
-web: gunicorn -w 1 -k eventlet -b 0.0.0.0:$PORT app:app
+web: gunicorn -w 1 -k gec5 Cn hi get -b 0.0.0.0:$PORT app:app
 """
 
 import os
