@@ -1,19 +1,6 @@
-"""
-app.py - CHATHUB (single-file, full-featured, deploy-ready)
-
-Create requirements.txt with these lines and run:
-pip install -r requirements.txt
-
-requirements.txt:
-Flask==3.1.2
-Flask-SocketIO==5.5.1
-gunicorn==23.0.0
-gevent==23.9.1
-Pillow==10.0.0
-
-Procfile (for Render):
-web: gunicorn -w 1 -k gec5 Cn hi get -b 0.0.0.0:$PORT app:app
-"""
+import eventlet
+# vital: this must be the very first line for production stability
+eventlet.monkey_patch()
 
 import os
 import sqlite3
@@ -38,7 +25,7 @@ app.config["MAX_CONTENT_LENGTH"] = UPLOAD_LIMIT
 app.config["UPLOAD_FOLDER"] = "uploads"
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
-# Use eventlet to support WebSockets in production (gunicorn + eventlet recommended)
+# FIXED: Explicitly use eventlet for both Local and Production stability
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 # ------------- DB helpers (each call opens/closes a connection) -------------
@@ -105,8 +92,11 @@ def file_to_dataurl(storage_file):
 def create_user(username, password_plain, avatar_dataurl=None):
     hashed = generate_password_hash(password_plain)
     conn = get_conn()
-    conn.execute("INSERT INTO users (username,password,avatar) VALUES (?, ?, ?)", (username, hashed, avatar_dataurl))
-    conn.commit()
+    try:
+        conn.execute("INSERT INTO users (username,password,avatar) VALUES (?, ?, ?)", (username, hashed, avatar_dataurl))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        pass # Handle duplicate user silently or let caller handle
     conn.close()
 
 def get_user(username):
@@ -264,13 +254,14 @@ def login():
 
 @app.route("/logout")
 def logout():
-    session.pop("user", None)
+    session.clear()  #This wipes everything, making it much stronger
     return redirect(url_for("login"))
 
 @app.route("/")
 def index():
     if "user" in session:
-        return redirect(url_for("chat"))
+        return 
+        redirect(url_for("chat"))
     return redirect(url_for("login"))
 
 @app.route("/chat")
@@ -338,7 +329,7 @@ MAIN_HTML = r"""
 <!doctype html>
 <html>
 <head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=0">
 <title>CHATHUB</title>
 <style>
 :root{ --bg-dark:#0f1720; --bg-green:#063; --bg-white:#fff; --text-dark:#e7eef8; --text-light:#111; --me:#00c3ff; --other:#263044; }
@@ -729,7 +720,6 @@ def on_get_pinned(data):
 
 @socketio.on("presence")
 def on_presence(data):
-    # no-op for now
     pass
 
 @socketio.on("connect")
@@ -745,14 +735,17 @@ def on_disconnect():
         sid_to_user.pop(sid, None)
     socketio.emit("user_list", [{"username": u, "avatar": get_user(u)["avatar"] if get_user(u) else None} for u in user_to_sid.keys()])
 
-# ------------- Startup -------------
+# --------- Startup ---------
 if __name__ == "__main__":
-    # Ensure Lobby has a welcome message (for first-time DB setup)
+    # 1. Initialize the database
     conn = get_conn()
     cur = conn.execute("SELECT COUNT(*) as c FROM messages").fetchone()
     if cur and cur["c"] == 0:
         persist_message("Lobby", "System", None, "Welcome to CHATHUB", None)
     conn.close()
 
-    # Local dev only (Render/Heroku will use gunicorn instead)
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True)  # local only
+    # 2. Get the Port for Render and Run
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Starting CHATHUB on port {port}...")
+    socketio.run(app, host='0.0.0.0', port=port)
