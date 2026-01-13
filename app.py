@@ -10,11 +10,12 @@ from flask import Flask, request, redirect, url_for, render_template_string, ses
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import or_, and_
 
 # ------------- Config -------------
 APP_PORT = int(os.environ.get("PORT", 5000))
 SECRET = os.environ.get("CHATHUB_SECRET", "chathub_secret_for_prod")
-UPLOAD_LIMIT = 2 * 1024 * 1024  # 2 MB
+UPLOAD_LIMIT = 5 * 1024 * 1024  # 5 MB Limit
 ALLOWED_EXT = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
 app = Flask(__name__)
@@ -44,9 +45,9 @@ class User(db.Model):
 
 class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    room = db.Column(db.String(80))
+    room = db.Column(db.String(80))      # None if DM
     sender = db.Column(db.String(80))
-    receiver = db.Column(db.String(80))
+    receiver = db.Column(db.String(80))  # None if Room
     message = db.Column(db.Text)
     image = db.Column(db.Text)
     reply_to = db.Column(db.Integer)
@@ -253,6 +254,10 @@ button{ cursor:pointer; background:var(--me); color:#000; border:none; font-weig
         <input id="newRoom" placeholder="New room" style="width:100px" />
         <button onclick="createRoom()">Create</button>
       </div>
+      <div class="search" style="margin-top:12px;">
+        <input id="searchInput" placeholder="Search..." style="width:100px" />
+        <button onclick="doSearch()">Search</button>
+      </div>
       <div style="margin-top:15px; font-weight:700;">Pinned</div>
       <div id="pinnedList"></div>
     </div>
@@ -295,6 +300,8 @@ let mode = "room";
 let activeMsgId = null;
 let pressTimer = null;
 let replyToId = null;
+let typingTimeout = null;
+let dmWith = null;
 
 function defaultIdent(name){
   const initials = (name||"?").substring(0,2).toUpperCase();
@@ -331,9 +338,15 @@ function renderRooms(rooms){
 }
 
 function switchToRoom(r){
-  mode="room"; currentRoom=r;
+  mode="room"; currentRoom=r; dmWith=null;
   document.getElementById("viewLabel").innerText = r;
   socket.emit("join_room", {username:user, room:r});
+  loadPinned(r);
+}
+
+function createRoom(){
+    const r = document.getElementById("newRoom").value.trim();
+    if(r) switchToRoom(r);
 }
 
 function openDM(other){
@@ -347,6 +360,7 @@ function renderMessage(m){
   div.className = "msg " + (m.sender===user ? "me":"other");
   div.dataset.id = m.id;
   
+  // Touch/Mouse events for Hold
   div.onmousedown = (e) => startPress(e, m.id, m.sender, div);
   div.ontouchstart = (e) => startPress(e, m.id, m.sender, div);
   div.onmouseup = () => cancelPress(div);
@@ -355,7 +369,7 @@ function renderMessage(m){
   const t = new Date((m.timestamp||0)*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
   const replyPart = m.reply_to ? `<div class='reply-box'>Reply to #${m.reply_to}</div>` : "";
   
-  let inner = `<div style='display:flex;flex-direction:column;'><div class='meta'><b>${m.sender}</b> <span class='small'>${t}</span></div>${replyPart}<div>${escapeHtml(m.message)}</div>`;
+  let inner = `<div style='display:flex;flex-direction:column;'><div class='meta'><b>${m.sender}</b> <span class='small'>${t}</span></div>${replyPart}<div class='content'>${escapeHtml(m.message)}</div>`;
   if(m.image) inner += `<img class='img-preview' src='${m.image}'>`;
   inner += `<div id='reactions-${m.id}' class='small' style='margin-top:4px'></div></div>`;
   
@@ -406,39 +420,73 @@ function sendMessage(){
   const f = document.getElementById("imageInput").files[0];
   const to = document.getElementById("toInput").value.trim();
   if(!text && !f) return;
+  
   const payload = {username:user, message:text, reply_to:replyToId};
-  if(to) { payload.to = to; socket.emit("send_dm", payload); }
-  else { payload.room = currentRoom; socket.emit("send_message", payload); }
-  document.getElementById("messageInput").value="";
+  
+  if(f){
+      const r=new FileReader(); 
+      r.onload=()=>{ 
+          payload.image = r.result; 
+          sendPayload(payload, to);
+      }; 
+      r.readAsDataURL(f);
+  } else {
+      sendPayload(payload, to);
+  }
 }
 
-function replyTo(id){ replyToId = id; closeMenu(); }
+function sendPayload(p, to){
+    if(to) { p.to = to; socket.emit("send_dm", p); }
+    else { p.room = currentRoom; socket.emit("send_message", p); }
+    document.getElementById("messageInput").value="";
+    document.getElementById("imageInput").value="";
+    replyToId=null;
+}
+
+function replyTo(id){ replyToId = id; closeMenu(); document.getElementById('messageInput').focus(); }
 function editMsg(id){ closeMenu(); const t = prompt('Edit:'); if(t) socket.emit('edit_message', {id, message:t}); }
 function delMsg(id){ closeMenu(); if(confirm('Delete?')) socket.emit('delete_message', {id}); }
 function pinMsg(id){ closeMenu(); socket.emit('pin_message', {id, room:currentRoom}); }
 function react(id, emoji){ socket.emit('react', {message_id:id, username:user, emoji}); closeMenu(); }
 
+function doSearch(){ const q=document.getElementById('searchInput').value.trim(); if(q) socket.emit('search', {room:currentRoom, query:q}); }
+function loadPinned(r){ socket.emit('get_pinned', {room:r}); }
+
+function typing(){ 
+    socket.emit('typing', {username:user, room:currentRoom}); 
+    if(typingTimeout) clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(()=>socket.emit('stop_typing', {username:user, room:currentRoom}), 1500);
+}
+
+// Socket Listeners
 socket.on("load_room_messages", (msgs)=>{ document.getElementById("messages").innerHTML=""; msgs.forEach(renderMessage); });
-socket.on("new_message_room", (m)=>{ if(m.room===currentRoom) renderMessage(m); });
+socket.on("new_message_room", (m)=>{ if(mode==="room" && m.room===currentRoom) renderMessage(m); });
+socket.on("new_message_dm", (m)=>{ if(mode==="dm" && ((m.sender===dmWith && m.receiver===user)||(m.sender===user && m.receiver===dmWith))) renderMessage(m); });
+
 socket.on("reactions_update", (d)=>{ const el=document.getElementById('reactions-'+d.message_id); if(el) el.innerHTML = Object.entries(d.reactions).map(([e,c])=>`${e}${c}`).join(" "); });
 socket.on("user_list", (users)=> renderUsers(users));
+socket.on("update_message", (m)=>{ const el=document.querySelector("[data-id='"+m.id+"']"); if(el) el.querySelector('.content').innerText = m.message; });
+socket.on("delete_message", (d)=>{ const el=document.querySelector("[data-id='"+d.id+"']"); if(el) el.remove(); });
+socket.on("search_results", (d)=>{ document.getElementById("messages").innerHTML=""; d.results.forEach(renderMessage); });
+socket.on("pinned_list", (list)=>{ const el=document.getElementById("pinnedList"); el.innerHTML=""; list.forEach(m=>{ const d=document.createElement("div"); d.className="small"; d.innerText=m.message; el.appendChild(d); }); });
+socket.on("typing", (d)=>{ if(d.username!==user) document.getElementById('typingIndicator').innerText = d.username+' typing...'; });
+socket.on("stop_typing", ()=>{ document.getElementById('typingIndicator').innerText = ''; });
 
 </script>
 </body>
 </html>
 """
 
-# ------------- Socket Handlers -------------
+# ------------- Socket Handlers (Complete) -------------
 @socketio.on("fetch_initial")
 def on_fetch_initial():
     users = [u.to_dict() for u in User.query.all()]
     rooms = [m.room for m in Message.query.with_entities(Message.room).distinct().all() if m.room]
-    emit("initial", {"users": users, "rooms": "Lobby" if not rooms else rooms})
+    if "Lobby" not in rooms: rooms.append("Lobby")
+    emit("initial", {"users": users, "rooms": rooms})
 
 @socketio.on("join_room")
 def on_join_room(data):
-    user_to_sid[data['username']] = request.sid
-    sid_to_user[request.sid] = data['username']
     join_room(data['room'])
     msgs = Message.query.filter_by(room=data['room'], receiver=None).order_by(Message.id.asc()).limit(100).all()
     emit("load_room_messages", [m.to_dict() for m in msgs])
@@ -448,24 +496,96 @@ def on_send_message(data):
     msg = persist_message(data['room'], data['username'], None, data['message'], data.get('image'), data.get('reply_to'))
     socketio.emit("new_message_room", msg, room=data['room'])
 
+@socketio.on("send_dm")
+def on_send_dm(data):
+    # Store DM with room=None, receiver=target
+    msg = persist_message(None, data['username'], data['to'], data['message'], data.get('image'), data.get('reply_to'))
+    # Emit to sender and receiver specifically
+    emit("new_message_dm", msg, room=request.sid) # back to sender
+    # find receiver SID
+    target_sid = user_to_sid.get(data['to'])
+    if target_sid:
+        emit("new_message_dm", msg, room=target_sid)
+
+@socketio.on("load_dm")
+def on_load_dm(data):
+    user = data['username']
+    other = data['other']
+    # Fetch messages where (sender=me AND receiver=other) OR (sender=other AND receiver=me)
+    msgs = Message.query.filter(
+        or_(
+            and_(Message.sender==user, Message.receiver==other),
+            and_(Message.sender==other, Message.receiver==user)
+        )
+    ).order_by(Message.id.asc()).limit(100).all()
+    emit("load_room_messages", [m.to_dict() for m in msgs])
+
 @socketio.on("react")
 def on_react(data):
     existing = Reaction.query.filter_by(message_id=data['message_id'], username=data['username'], emoji=data['emoji']).first()
     if existing: db.session.delete(existing)
     else: db.session.add(Reaction(message_id=data['message_id'], username=data['username'], emoji=data['emoji']))
     db.session.commit()
+    # Tally reactions
     reacts = Reaction.query.filter_by(message_id=data['message_id']).all()
     summary = {}
     for r in reacts: summary[r.emoji] = summary.get(r.emoji, 0) + 1
     socketio.emit("reactions_update", {"message_id": data['message_id'], "reactions": summary})
 
+@socketio.on("edit_message")
+def on_edit_message(data):
+    msg = Message.query.get(data['id'])
+    if msg: # In prod, check if msg.sender == current_user
+        msg.message = data['message']
+        db.session.commit()
+        socketio.emit("update_message", {"id": msg.id, "message": msg.message})
+
 @socketio.on("delete_message")
 def on_delete_message(data):
     msg = Message.query.get(data['id'])
-    if msg and msg.sender == sid_to_user.get(request.sid):
+    if msg: 
         db.session.delete(msg)
         db.session.commit()
         socketio.emit("delete_message", {"id": data['id']})
+
+@socketio.on("pin_message")
+def on_pin_message(data):
+    # Only allow one pin per message to avoid duplicates
+    if not Pin.query.filter_by(message_id=data['id']).first():
+        p = Pin(message_id=data['id'], room=data['room'])
+        db.session.add(p)
+        db.session.commit()
+        # Refresh pin list for everyone in room
+        on_get_pinned({'room': data['room']})
+
+@socketio.on("get_pinned")
+def on_get_pinned(data):
+    pins = Pin.query.filter_by(room=data['room']).all()
+    results = []
+    for p in pins:
+        m = Message.query.get(p.message_id)
+        if m: results.append(m.to_dict())
+    emit("pinned_list", results)
+
+@socketio.on("search")
+def on_search(data):
+    # Simple substring search
+    results = Message.query.filter(Message.room==data['room'], Message.message.contains(data['query'])).limit(50).all()
+    emit("search_results", {"results": [m.to_dict() for m in results]})
+
+@socketio.on("typing")
+def on_typing(data):
+    socketio.emit("typing", {"username": data['username']}, room=data['room'])
+
+@socketio.on("stop_typing")
+def on_stop(data):
+    socketio.emit("stop_typing", {}, room=data['room'])
+
+# Helper to track SIDs for DMs
+@socketio.on("connect")
+def on_connect():
+    if "user" in session:
+        user_to_sid[session["user"]] = request.sid
 
 if __name__ == "__main__":
     socketio.run(app, host='0.0.0.0', port=APP_PORT)
