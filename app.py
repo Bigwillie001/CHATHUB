@@ -324,7 +324,7 @@ button:active {
 <body>
 <div class="container">
     <h2>{{mode}}</h2>
-    <p class="subtitle">Welcome to ChatHub V2</p>
+    <p class="subtitle">Welcome to ChatHub</p>
     {% with m=get_flashed_messages() %}
         {% if m %}<div class="error">{{m[0]}}</div>{% endif %}
     {% endwith %}
